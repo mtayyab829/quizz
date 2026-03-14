@@ -430,7 +430,7 @@ export const CourseDetailPage = () => {
                   <BookOpen className="text-blue-500" size={18} />
                   <span className="text-sm font-medium">Modules</span>
                 </div>
-                <span className="font-bold">{course?.modulesCount || 0}</span>
+                <span className="font-bold">{modules.length}</span>
               </div>
               <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50">
                 <div className="flex items-center gap-3">

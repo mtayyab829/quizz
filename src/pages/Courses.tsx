@@ -29,6 +29,7 @@ const iconMap: Record<string, any> = {
 export const CoursesPage = () => {
   const [courses, setCourses] = useState<Course[]>([]);
   const [loading, setLoading] = useState(true);
+  const [moduleCounts, setModuleCounts] = useState<Record<string, number>>({});
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin';
 
@@ -49,6 +50,21 @@ export const CoursesPage = () => {
     });
 
     return () => unsubscribe();
+  }, [isAdmin]);
+
+  useEffect(() => {
+    const modulesUnsub = onSnapshot(collection(db, 'modules'), (snapshot) => {
+      const counts: Record<string, number> = {};
+      snapshot.docs.forEach(doc => {
+        const data = doc.data() as any;
+        if (!data?.courseId) return;
+        if (!isAdmin && data.status !== 'active') return;
+        counts[data.courseId] = (counts[data.courseId] || 0) + 1;
+      });
+      setModuleCounts(counts);
+    });
+
+    return () => modulesUnsub();
   }, [isAdmin]);
 
   const handleCreateCourse = async () => {
@@ -91,7 +107,12 @@ export const CoursesPage = () => {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
           {courses.map((course) => (
-            <CourseCard key={course.id} course={course} isAdmin={isAdmin} />
+            <CourseCard
+              key={course.id}
+              course={course}
+              isAdmin={isAdmin}
+              modulesCount={moduleCounts[course.id]}
+            />
           ))}
           
           {isAdmin && (
@@ -112,9 +133,10 @@ export const CoursesPage = () => {
   );
 };
 
-const CourseCard = ({ course, isAdmin }: any) => {
+const CourseCard = ({ course, isAdmin, modulesCount }: any) => {
   const Icon = iconMap[course.icon] || BookOpen;
   const isDraft = course.status === 'draft';
+  const computedModules = typeof modulesCount === 'number' ? modulesCount : (course.modulesCount || 0);
 
   return (
     <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden hover:shadow-xl hover:shadow-primary/5 transition-all group">
@@ -136,7 +158,7 @@ const CourseCard = ({ course, isAdmin }: any) => {
           <div className="flex items-center gap-2">
             <div className="leading-tight">
               <p className="text-xs text-slate-400 uppercase font-semibold">Modules</p>
-              <p className="font-bold text-sm">{course.modulesCount}</p>
+              <p className="font-bold text-sm">{computedModules}</p>
             </div>
           </div>
           <div className="flex items-center gap-2">

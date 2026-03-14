@@ -32,6 +32,12 @@ export const Dashboard = () => {
     avgScore: 0,
     totalSessions: 0
   });
+  const [trends, setTrends] = useState({
+    totalUsers: { label: '0%', up: true },
+    activeQuizzes: { label: '0%', up: true },
+    avgScore: { label: '0%', up: true },
+    totalSessions: { label: '0%', up: true }
+  });
   const [recentActivity, setRecentActivity] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [seeding, setSeeding] = useState(false);
@@ -67,6 +73,58 @@ export const Dashboard = () => {
           activeQuizzes,
           avgScore,
           totalSessions: resultsSnap.size
+        });
+
+        const toDate = (value: any) => {
+          if (!value) return null;
+          if (value.toDate) return value.toDate() as Date;
+          if (typeof value === 'string' || typeof value === 'number') return new Date(value);
+          return null;
+        };
+
+        const now = new Date();
+        const startCurrent = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        const startPrev = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
+
+        const inRange = (d: Date | null, start: Date, end: Date) => !!d && d >= start && d < end;
+        const formatTrend = (current: number, prev: number) => {
+          if (prev === 0 && current === 0) return { label: '0%', up: true };
+          if (prev === 0 && current > 0) return { label: 'New', up: true };
+          const delta = Math.round(((current - prev) / prev) * 100);
+          return { label: `${delta > 0 ? '+' : ''}${delta}%`, up: delta >= 0 };
+        };
+
+        const usersDates = usersSnap.docs.map(d => toDate(d.data().createdAt));
+        const usersCurrent = usersDates.filter(d => inRange(d, startCurrent, now)).length;
+        const usersPrev = usersDates.filter(d => inRange(d, startPrev, startCurrent)).length;
+
+        const modulesDates = modulesSnap.docs
+          .filter(d => d.data().status === 'active')
+          .map(d => toDate(d.data().createdAt));
+        const modulesCurrent = modulesDates.filter(d => inRange(d, startCurrent, now)).length;
+        const modulesPrev = modulesDates.filter(d => inRange(d, startPrev, startCurrent)).length;
+
+        const results = resultsSnap.docs.map(d => d.data());
+        const resultsCurrent = results.filter(r => inRange(toDate(r.completedAt), startCurrent, now));
+        const resultsPrev = results.filter(r => inRange(toDate(r.completedAt), startPrev, startCurrent));
+
+        const avgCurrent = resultsCurrent.length
+          ? Math.round(resultsCurrent.reduce((acc, r) => acc + (r.score / r.totalQuestions) * 100, 0) / resultsCurrent.length)
+          : 0;
+        const avgPrev = resultsPrev.length
+          ? Math.round(resultsPrev.reduce((acc, r) => acc + (r.score / r.totalQuestions) * 100, 0) / resultsPrev.length)
+          : 0;
+
+        const avgDelta = avgCurrent - avgPrev;
+        const avgTrend = avgPrev === 0 && avgCurrent > 0
+          ? { label: 'New', up: true }
+          : { label: `${avgDelta > 0 ? '+' : ''}${avgDelta}%`, up: avgDelta >= 0 };
+
+        setTrends({
+          totalUsers: formatTrend(usersCurrent, usersPrev),
+          activeQuizzes: formatTrend(modulesCurrent, modulesPrev),
+          avgScore: avgTrend,
+          totalSessions: formatTrend(resultsCurrent.length, resultsPrev.length)
         });
       } catch (error) {
         console.error('Error fetching stats:', error);
@@ -120,10 +178,10 @@ export const Dashboard = () => {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        <StatCard icon={Users} label="Total Users" value={stats.totalUsers.toLocaleString()} trend="+0%" trendUp={true} color="primary" />
-        <StatCard icon={BookOpen} label="Active Modules" value={stats.activeQuizzes.toString()} trend="+0%" trendUp={true} color="purple-500" />
-        <StatCard icon={Star} label="Average Score" value={`${stats.avgScore}%`} trend="+0%" trendUp={true} color="orange-500" />
-        <StatCard icon={Clock} label="Total Attempts" value={stats.totalSessions.toString()} trend="+0%" trendUp={true} color="blue-500" />
+        <StatCard icon={Users} label="Total Users" value={stats.totalUsers.toLocaleString()} trend={trends.totalUsers.label} trendUp={trends.totalUsers.up} color="primary" />
+        <StatCard icon={BookOpen} label="Active Modules" value={stats.activeQuizzes.toString()} trend={trends.activeQuizzes.label} trendUp={trends.activeQuizzes.up} color="purple-500" />
+        <StatCard icon={Star} label="Average Score" value={`${stats.avgScore}%`} trend={trends.avgScore.label} trendUp={trends.avgScore.up} color="orange-500" />
+        <StatCard icon={Clock} label="Total Attempts" value={stats.totalSessions.toString()} trend={trends.totalSessions.label} trendUp={trends.totalSessions.up} color="blue-500" />
       </div>
 
       <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
@@ -209,4 +267,3 @@ const ActivityRow = ({ user, initial, title, score, status, time, statusColor }:
     </td>
   </tr>
 );
-

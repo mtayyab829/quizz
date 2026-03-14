@@ -21,11 +21,26 @@ import {
   Info
 } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { collection, addDoc, getDocs, query, where } from 'firebase/firestore';
+import { collection, addDoc, getDocs, getDoc, updateDoc, doc, query, where } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Question, Quiz } from '../types';
+
+const questionTypeLabels: Record<string, string> = {
+  'multiple-choice': 'Multiple Choice',
+  'multi-select': 'Multi-Select',
+  'true-false': 'True/False',
+  'short-answer': 'Short Answer',
+  'fill-in-the-blank': 'Fill in the Blanks',
+  'verbal': 'Verbal',
+  'non-verbal': 'Non-Verbal',
+  'matching': 'Matching',
+  'ordering': 'Ordering',
+};
+
+const textResponseTypes = ['short-answer', 'fill-in-the-blank', 'verbal'];
+const hasImageUrl = (url?: string) => (url || '').trim().length > 0;
 
 export const QuizBuilderPage = () => {
   const { user } = useAuth();
@@ -35,10 +50,12 @@ export const QuizBuilderPage = () => {
   // Get moduleId from query params
   const queryParams = new URLSearchParams(location.search);
   const initialModuleId = queryParams.get('moduleId') || '';
+  const initialQuizId = queryParams.get('quizId') || '';
 
   const [title, setTitle] = useState('New Quiz');
   const [description, setDescription] = useState('');
   const [moduleId, setModuleId] = useState(initialModuleId);
+  const [editingQuizId, setEditingQuizId] = useState(initialQuizId);
   const [durationMinutes, setDurationMinutes] = useState(20);
   const [difficulty, setDifficulty] = useState<'beginner' | 'intermediate' | 'advanced'>('intermediate');
   const [passingScore, setPassingScore] = useState(70);
@@ -71,6 +88,32 @@ export const QuizBuilderPage = () => {
     fetchModules();
   }, []);
 
+  useEffect(() => {
+    const fetchQuiz = async () => {
+      if (!editingQuizId) return;
+      try {
+        const quizDoc = await getDoc(doc(db, 'quizzes', editingQuizId));
+        if (!quizDoc.exists()) return;
+        const data = quizDoc.data() as Quiz;
+        setTitle(data.title || 'Untitled Quiz');
+        setDescription(data.description || '');
+        setModuleId(data.moduleId || initialModuleId);
+        setDurationMinutes(data.durationMinutes || 20);
+        setDifficulty(data.difficulty || 'intermediate');
+        setPassingScore(data.passingScore || 70);
+        setShuffleQuestions(!!data.shuffleQuestions);
+        const loadedQuestions = (data.questions || []).map((q, idx) => ({
+          ...q,
+          id: q.id || `${Date.now()}-${idx}`
+        }));
+        setQuestions(loadedQuestions.length > 0 ? loadedQuestions : []);
+      } catch (error) {
+        handleFirestoreError(error, OperationType.GET, `quizzes/${editingQuizId}`);
+      }
+    };
+    fetchQuiz();
+  }, [editingQuizId, initialModuleId]);
+
   const addQuestion = (type: Question['type'] = 'multiple-choice') => {
     const newQuestion: Partial<Question> = {
       id: Date.now().toString(),
@@ -88,39 +131,50 @@ export const QuizBuilderPage = () => {
     } else if (type === 'true-false') {
       newQuestion.options = ['True', 'False'];
       newQuestion.correctAnswer = 0;
+    } else if (type === 'non-verbal') {
+      newQuestion.options = ['', '', '', ''];
+      newQuestion.optionImages = ['', '', '', ''];
+      newQuestion.correctAnswer = 0;
+    } else if (textResponseTypes.includes(type)) {
+      newQuestion.correctAnswerText = '';
     } else if (type === 'matching') {
       newQuestion.matchingPairs = [{ left: 'Term 1', right: 'Definition 1' }, { left: 'Term 2', right: 'Definition 2' }];
     } else if (type === 'ordering') {
       newQuestion.orderedItems = ['Step 1', 'Step 2', 'Step 3'];
     }
 
-    setQuestions([...questions, newQuestion]);
+    setQuestions((prev) => [...prev, newQuestion]);
   };
 
   const duplicateQuestion = (index: number) => {
-    const q = questions[index];
-    const newQ = { ...q, id: Date.now().toString() };
-    const newQuestions = [...questions];
-    newQuestions.splice(index + 1, 0, newQ);
-    setQuestions(newQuestions);
+    setQuestions((prev) => {
+      const q = prev[index];
+      if (!q) return prev;
+      const newQ = { ...q, id: Date.now().toString() };
+      const newQuestions = [...prev];
+      newQuestions.splice(index + 1, 0, newQ);
+      return newQuestions;
+    });
   };
 
   const moveQuestion = (index: number, direction: 'up' | 'down') => {
     if (direction === 'up' && index === 0) return;
     if (direction === 'down' && index === questions.length - 1) return;
 
-    const newQuestions = [...questions];
-    const targetIndex = direction === 'up' ? index - 1 : index + 1;
-    [newQuestions[index], newQuestions[targetIndex]] = [newQuestions[targetIndex], newQuestions[index]];
-    setQuestions(newQuestions);
+    setQuestions((prev) => {
+      const newQuestions = [...prev];
+      const targetIndex = direction === 'up' ? index - 1 : index + 1;
+      [newQuestions[index], newQuestions[targetIndex]] = [newQuestions[targetIndex], newQuestions[index]];
+      return newQuestions;
+    });
   };
 
   const removeQuestion = (id: string) => {
-    setQuestions(questions.filter(q => q.id !== id));
+    setQuestions((prev) => prev.filter(q => q.id !== id));
   };
 
   const updateQuestion = (id: string, updates: Partial<Question>) => {
-    setQuestions(questions.map(q => q.id === id ? { ...q, ...updates } : q));
+    setQuestions((prev) => prev.map(q => q.id === id ? { ...q, ...updates } : q));
   };
 
   const handleSave = async () => {
@@ -128,6 +182,58 @@ export const QuizBuilderPage = () => {
       alert('Please select a module');
       return;
     }
+    if (questions.length === 0) {
+      alert('Please add at least one question before publishing.');
+      return;
+    }
+
+    const errors: string[] = [];
+    questions.forEach((q, i) => {
+      const number = i + 1;
+      if (!q.text || q.text.trim() === '') {
+        errors.push(`Question ${number}: missing question text.`);
+      }
+      if (q.type === 'multiple-choice' || q.type === 'multi-select') {
+        const options = (q.options || []).map(o => (o || '').trim());
+        if (options.length === 0 || options.some(o => o === '')) {
+          errors.push(`Question ${number}: all options must have text.`);
+        }
+      }
+      if (q.type === 'true-false') {
+        if (!q.options || q.options.length !== 2) {
+          errors.push(`Question ${number}: true/false options are incomplete.`);
+        }
+      }
+      if (q.type === 'non-verbal') {
+        const imgs = (q.optionImages || []).map(o => (o || '').trim());
+        if (imgs.length === 0 || imgs.some(o => o === '')) {
+          errors.push(`Question ${number}: all non-verbal options must have image URLs.`);
+        }
+      }
+      if (textResponseTypes.includes(q.type)) {
+        if (!q.correctAnswerText || q.correctAnswerText.trim() === '') {
+          errors.push(`Question ${number}: correct answer text is required.`);
+        }
+      }
+      if (q.type === 'matching') {
+        const pairs = q.matchingPairs || [];
+        if (pairs.length === 0 || pairs.some(p => !p.left?.trim() || !p.right?.trim())) {
+          errors.push(`Question ${number}: matching pairs must be complete.`);
+        }
+      }
+      if (q.type === 'ordering') {
+        const items = (q.orderedItems || []).map(o => (o || '').trim());
+        if (items.length === 0 || items.some(o => o === '')) {
+          errors.push(`Question ${number}: ordering items must be complete.`);
+        }
+      }
+    });
+
+    if (errors.length > 0) {
+      alert(`Please fix the following before publishing:\n\n${errors.slice(0, 8).join('\n')}${errors.length > 8 ? `\n…plus ${errors.length - 8} more.` : ''}`);
+      return;
+    }
+
     setSaving(true);
     try {
       const quizData: Partial<Quiz> = {
@@ -144,25 +250,36 @@ export const QuizBuilderPage = () => {
         tags: [],
       };
 
-      const quizDoc = await addDoc(collection(db, 'quizzes'), {
-        ...quizData,
-        createdBy: user.uid,
-        createdAt: new Date().toISOString()
-      });
+      let savedQuizId = editingQuizId || '';
+      if (editingQuizId) {
+        await updateDoc(doc(db, 'quizzes', editingQuizId), {
+          ...quizData,
+          updatedAt: new Date().toISOString()
+        });
+      } else {
+        const quizDoc = await addDoc(collection(db, 'quizzes'), {
+          ...quizData,
+          createdBy: user.uid,
+          createdAt: new Date().toISOString()
+        });
+
+        savedQuizId = quizDoc.id;
+        setEditingQuizId(quizDoc.id);
+      }
 
       // Add Audit Log
       await addDoc(collection(db, 'audit_logs'), {
-        action: 'Quiz Created',
+        action: editingQuizId ? 'Quiz Updated' : 'Quiz Created',
         userEmail: user.email || 'Unknown',
         userId: user.uid,
-        details: `Created quiz "${title}" (ID: ${quizDoc.id})`,
+        details: editingQuizId ? `Updated quiz "${title}" (ID: ${savedQuizId})` : `Created quiz "${title}" (ID: ${savedQuizId})`,
         timestamp: new Date().toISOString(),
         status: 'success'
       });
 
       navigate(`/modules/${moduleId}`);
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, 'quizzes');
+      handleFirestoreError(error, editingQuizId ? OperationType.UPDATE : OperationType.CREATE, 'quizzes');
     } finally {
       setSaving(false);
     }
@@ -288,6 +405,9 @@ export const QuizBuilderPage = () => {
                       { id: 'multi-select', label: 'Multi-Select' },
                       { id: 'true-false', label: 'True/False' },
                       { id: 'short-answer', label: 'Short Answer' },
+                      { id: 'fill-in-the-blank', label: 'Fill in the Blanks' },
+                      { id: 'verbal', label: 'Verbal' },
+                      { id: 'non-verbal', label: 'Non-Verbal' },
                       { id: 'matching', label: 'Matching' },
                       { id: 'ordering', label: 'Ordering' },
                     ].map(type => (
@@ -374,7 +494,9 @@ export const QuizBuilderPage = () => {
       {/* Preview Modal */}
       {showPreview && (
         <PreviewModal 
-          quiz={{ title, description, questions: questions as Question[] }} 
+          title={title}
+          description={description}
+          questions={questions as Question[]}
           onClose={() => setShowPreview(false)} 
         />
       )}
@@ -401,8 +523,17 @@ const QuestionEditor = ({
     onUpdate({ options: newOptions });
   };
 
+  const handleOptionImageChange = (optIndex: number, value: string) => {
+    const newImages = [...(question.optionImages || [])];
+    while (newImages.length < (question.options?.length || 0)) {
+      newImages.push('');
+    }
+    newImages[optIndex] = value;
+    onUpdate({ optionImages: newImages });
+  };
+
   const toggleCorrectAnswer = (optIndex: number) => {
-    if (question.type === 'multiple-choice' || question.type === 'true-false') {
+    if (question.type === 'multiple-choice' || question.type === 'true-false' || question.type === 'non-verbal') {
       onUpdate({ correctAnswer: optIndex });
     } else if (question.type === 'multi-select') {
       const current = (question.correctAnswer as number[]) || [];
@@ -423,7 +554,7 @@ const QuestionEditor = ({
           </div>
           <div className="flex items-center gap-2 px-3 py-1 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-700">
             <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Type</span>
-            <span className="text-xs font-bold text-primary uppercase">{question.type?.replace('-', ' ')}</span>
+            <span className="text-xs font-bold text-primary uppercase">{questionTypeLabels[question.type] || question.type?.replace('-', ' ')}</span>
           </div>
         </div>
         <div className="flex items-center gap-1">
@@ -509,13 +640,61 @@ const QuestionEditor = ({
             </div>
           )}
 
-          {question.type === 'short-answer' && (
+          {question.type === 'non-verbal' && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {question.optionImages?.map((img: string, i: number) => (
+                <div key={i} className={cn(
+                  "flex items-center gap-4 p-4 rounded-2xl border transition-all group/opt",
+                  question.correctAnswer === i
+                    ? "border-primary bg-primary/5 shadow-sm" 
+                    : "border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/30"
+                )}>
+                  <button 
+                    onClick={() => toggleCorrectAnswer(i)}
+                    className={cn(
+                      "size-6 rounded-full border-2 flex items-center justify-center transition-all",
+                      question.correctAnswer === i
+                        ? "bg-primary border-primary text-white scale-110" 
+                        : "border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900"
+                    )}
+                  >
+                    {question.correctAnswer === i && <CheckCircle2 size={14} />}
+                  </button>
+                  <div className="flex-1 space-y-3">
+                    <input 
+                      className="w-full px-3 py-2 bg-white/70 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-700 rounded-lg text-[11px] font-medium outline-none" 
+                      value={img}
+                      onChange={(e) => handleOptionImageChange(i, e.target.value)}
+                      placeholder={`Option ${i + 1} image URL`}
+                    />
+                    {hasImageUrl(img) && (
+                      <img
+                        src={img}
+                        alt={`Option ${i + 1}`}
+                        className="w-full rounded-xl border border-slate-100 dark:border-slate-800"
+                        onError={(e) => {
+                          e.currentTarget.style.display = 'none';
+                        }}
+                      />
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {textResponseTypes.includes(question.type) && (
             <div className="space-y-4">
               <input 
                 className="w-full px-6 py-4 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-primary/20" 
                 value={question.correctAnswerText || ''}
                 onChange={(e) => onUpdate({ correctAnswerText: e.target.value })}
-                placeholder="Enter the exact correct answer..." 
+                placeholder={
+                  question.type === 'fill-in-the-blank'
+                    ? "Enter the exact blank(s) answer..."
+                    : question.type === 'verbal' || question.type === 'non-verbal'
+                      ? "Enter the expected answer or rubric keywords..."
+                      : "Enter the exact correct answer..."
+                } 
               />
               <p className="text-[10px] text-slate-400 font-bold italic">* Case-insensitive matching will be used.</p>
             </div>
@@ -653,9 +832,9 @@ const QuestionEditor = ({
   );
 };
 
-const PreviewModal = ({ quiz, onClose }: any) => {
+const PreviewModal = ({ title, questions, onClose }: any) => {
   const [currentIdx, setCurrentIdx] = useState(0);
-  const currentQ = quiz.questions[currentIdx];
+  const currentQ = questions[currentIdx];
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 md:p-8">
@@ -664,7 +843,7 @@ const PreviewModal = ({ quiz, onClose }: any) => {
         <div className="px-8 py-6 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-800/50">
           <div>
             <span className="text-[10px] font-black text-primary uppercase tracking-widest">Preview Mode</span>
-            <h2 className="text-xl font-black">{quiz.title}</h2>
+            <h2 className="text-xl font-black">{title}</h2>
           </div>
           <button onClick={onClose} className="p-2 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-full transition-colors">
             <X size={24} />
@@ -672,13 +851,13 @@ const PreviewModal = ({ quiz, onClose }: any) => {
         </div>
 
         <div className="flex-1 overflow-y-auto p-8 md:p-12">
-          {quiz.questions.length > 0 ? (
+          {questions.length > 0 && currentQ ? (
             <div className="max-w-2xl mx-auto space-y-8">
               <div className="space-y-4">
                 <div className="flex items-center gap-4">
-                  <span className="text-xs font-black text-slate-400 uppercase tracking-widest">Question {currentIdx + 1} of {quiz.questions.length}</span>
+                  <span className="text-xs font-black text-slate-400 uppercase tracking-widest">Question {currentIdx + 1} of {questions.length}</span>
                   <div className="flex-1 h-1 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
-                    <div className="h-full bg-primary transition-all duration-500" style={{ width: `${((currentIdx + 1) / quiz.questions.length) * 100}%` }} />
+                    <div className="h-full bg-primary transition-all duration-500" style={{ width: `${((currentIdx + 1) / questions.length) * 100}%` }} />
                   </div>
                 </div>
                 <h3 className="text-2xl md:text-3xl font-black leading-tight">{currentQ.text}</h3>
@@ -690,14 +869,52 @@ const PreviewModal = ({ quiz, onClose }: any) => {
               <div className="space-y-3">
                 {(currentQ.type === 'multiple-choice' || currentQ.type === 'multi-select' || currentQ.type === 'true-false') && (
                   <div className="grid grid-cols-1 gap-3">
-                    {currentQ.options?.map((opt: string, i: number) => (
-                      <div key={i} className="p-5 rounded-2xl border-2 border-slate-100 dark:border-slate-800 hover:border-primary/30 transition-all cursor-pointer font-bold">
-                        {opt}
+                    {currentQ.options?.map((opt: string, i: number) => {
+                      const isCorrect = currentQ.type === 'multi-select'
+                        ? ((currentQ.correctAnswer as number[]) || []).includes(i)
+                        : currentQ.correctAnswer === i;
+
+                      return (
+                      <div
+                        key={i}
+                        className={cn(
+                          "p-5 rounded-2xl border-2 transition-all cursor-pointer font-bold space-y-3 flex items-center justify-between",
+                          isCorrect
+                            ? "border-emerald-400 bg-emerald-50/60 text-emerald-700"
+                            : "border-slate-100 dark:border-slate-800 hover:border-primary/30"
+                        )}
+                      >
+                        <div>{(opt || '').trim() || `Option ${i + 1}`}</div>
+                        {isCorrect && (
+                          <span className="text-[10px] font-black uppercase tracking-widest bg-emerald-500 text-white px-2 py-1 rounded-full">
+                            Correct
+                          </span>
+                        )}
+                      </div>
+                    )})}
+                  </div>
+                )}
+                {currentQ.type === 'non-verbal' && (
+                  <div className="grid grid-cols-1 gap-3">
+                    {currentQ.optionImages?.map((img: string, i: number) => (
+                      <div key={i} className="p-5 rounded-2xl border-2 border-slate-100 dark:border-slate-800 hover:border-primary/30 transition-all cursor-pointer font-bold space-y-3">
+                        {hasImageUrl(img) ? (
+                          <img
+                            src={img}
+                            alt={`Option ${i + 1}`}
+                            className="w-full rounded-xl border border-slate-100 dark:border-slate-800"
+                            onError={(e) => {
+                              e.currentTarget.style.display = 'none';
+                            }}
+                          />
+                        ) : (
+                          <div className="text-xs text-slate-400 font-bold uppercase tracking-widest">Image required</div>
+                        )}
                       </div>
                     ))}
                   </div>
                 )}
-                {currentQ.type === 'short-answer' && (
+                {textResponseTypes.includes(currentQ.type) && (
                   <input 
                     className="w-full px-6 py-4 bg-slate-50 dark:bg-slate-800 border-2 border-slate-100 dark:border-slate-800 rounded-2xl text-lg font-bold outline-none" 
                     placeholder="Type your answer..."
@@ -706,18 +923,14 @@ const PreviewModal = ({ quiz, onClose }: any) => {
                 )}
                 {currentQ.type === 'matching' && (
                   <div className="space-y-4">
-                    <p className="text-sm text-slate-500 italic">Matching UI preview...</p>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-2">
-                        {currentQ.matchingPairs?.map((p: any, i: number) => (
-                          <div key={i} className="p-3 bg-slate-50 dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 text-sm font-bold">{p.left}</div>
-                        ))}
-                      </div>
-                      <div className="space-y-2">
-                        {currentQ.matchingPairs?.map((p: any, i: number) => (
-                          <div key={i} className="p-3 bg-slate-50 dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 text-sm font-bold">{p.right}</div>
-                        ))}
-                      </div>
+                    <div className="grid grid-cols-1 gap-3">
+                      {currentQ.matchingPairs?.map((p: any, i: number) => (
+                        <div key={i} className="flex items-center gap-4 p-4 bg-slate-50 dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700">
+                          <div className="flex-1 text-sm font-bold">{p.left || `Term ${i + 1}`}</div>
+                          <div className="text-slate-300 font-black">→</div>
+                          <div className="flex-1 text-sm font-bold text-right">{p.right || `Definition ${i + 1}`}</div>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 )}
@@ -750,7 +963,7 @@ const PreviewModal = ({ quiz, onClose }: any) => {
             Previous
           </button>
           <button 
-            disabled={currentIdx === quiz.questions.length - 1}
+            disabled={currentIdx === questions.length - 1}
             onClick={() => setCurrentIdx(currentIdx + 1)}
             className="px-8 py-2 bg-primary text-white rounded-xl font-bold hover:opacity-90 disabled:opacity-20 transition-all"
           >

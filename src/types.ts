@@ -50,14 +50,24 @@ export interface Module {
   status: 'active' | 'draft' | 'archived';
   icon: string;
   color: string;
+  materials?: ModuleMaterial[];
+}
+
+export interface ModuleMaterial {
+  id: string;
+  title: string;
+  type: 'article' | 'video' | 'pdf' | 'link' | 'notes';
+  url?: string;
+  description?: string;
 }
 
 export interface Question {
   id: string;
-  type: 'multiple-choice' | 'true-false' | 'short-answer' | 'multi-select' | 'matching' | 'ordering';
+  type: 'multiple-choice' | 'true-false' | 'short-answer' | 'fill-in-the-blank' | 'verbal' | 'non-verbal' | 'multi-select' | 'matching' | 'ordering';
   text: string;
   imageUrl?: string;
   options?: string[];
+  optionImages?: string[];
   correctAnswer?: string | number | number[];
   correctAnswerText?: string;
   points: number;

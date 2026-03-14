@@ -34,6 +34,7 @@ export const ModulesPage = () => {
   const { courseId } = useParams<{ courseId: string }>();
   const navigate = useNavigate();
   const [modules, setModules] = useState<Module[]>([]);
+  const [quizCounts, setQuizCounts] = useState<Record<string, number>>({});
   const [course, setCourse] = useState<Course | null>(null);
   const [loading, setLoading] = useState(true);
   const { user } = useAuth();
@@ -72,6 +73,25 @@ export const ModulesPage = () => {
 
     return () => unsubscribe();
   }, [isAdmin, courseId, navigate]);
+
+  useEffect(() => {
+    if (!modules.length) {
+      setQuizCounts({});
+      return;
+    }
+    const moduleIdSet = new Set(modules.map(m => m.id));
+    const unsubscribe = onSnapshot(collection(db, 'quizzes'), (snapshot) => {
+      const counts: Record<string, number> = {};
+      snapshot.docs.forEach(doc => {
+        const data = doc.data() as any;
+        if (!moduleIdSet.has(data.moduleId)) return;
+        if (!isAdmin && data.status !== 'active') return;
+        counts[data.moduleId] = (counts[data.moduleId] || 0) + 1;
+      });
+      setQuizCounts(counts);
+    });
+    return () => unsubscribe();
+  }, [modules, isAdmin]);
 
   const handleCreateModule = async () => {
     if (!isAdmin || !courseId) return;
@@ -121,7 +141,12 @@ export const ModulesPage = () => {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
           {modules.map((module) => (
-            <ModuleCard key={module.id} module={module} isAdmin={isAdmin} />
+            <ModuleCard
+              key={module.id}
+              module={module}
+              isAdmin={isAdmin}
+              quizCount={quizCounts[module.id]}
+            />
           ))}
           
           {isAdmin && (
@@ -142,12 +167,13 @@ export const ModulesPage = () => {
   );
 };
 
-const ModuleCard = ({ module, isAdmin }: any) => {
+const ModuleCard = ({ module, isAdmin, quizCount }: any) => {
   const Icon = iconMap[module.icon] || Terminal;
   const isDraft = module.status === 'draft';
   const isArchived = module.status === 'archived';
   const isActive = module.status === 'active';
   const [firstQuizId, setFirstQuizId] = useState<string | null>(null);
+  const displayQuizCount = typeof quizCount === 'number' ? quizCount : (module.quizzesCount || 0);
 
   useEffect(() => {
     if (isAdmin) return;
@@ -192,12 +218,12 @@ const ModuleCard = ({ module, isAdmin }: any) => {
           </div>
         </div>
 
-        <div className="absolute top-6 right-6">
-          <div className="px-3 py-1.5 bg-white/90 dark:bg-slate-900/90 rounded-full text-[10px] font-black uppercase tracking-widest border border-slate-200 dark:border-slate-700 shadow-sm flex items-center gap-2">
-            <BookOpen size={12} className="text-primary" />
-            <span>{module.quizzesCount || 0} Quizzes</span>
+          <div className="absolute top-6 right-6">
+            <div className="px-3 py-1.5 bg-white/90 dark:bg-slate-900/90 rounded-full text-[10px] font-black uppercase tracking-widest border border-slate-200 dark:border-slate-700 shadow-sm flex items-center gap-2">
+              <BookOpen size={12} className="text-primary" />
+              <span>{displayQuizCount} Quizzes</span>
+            </div>
           </div>
-        </div>
       </div>
 
       <div className="p-8 flex-1 flex flex-col">

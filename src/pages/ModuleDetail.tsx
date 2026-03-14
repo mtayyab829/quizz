@@ -17,11 +17,17 @@ import {
   BarChart,
   ChevronLeft,
   ChevronRight,
-  Plus
+  Plus,
+  Eye,
+  Copy,
+  Archive,
+  RefreshCw,
+  AlertTriangle,
+  MoreVertical
 } from 'lucide-react';
-import { doc, getDoc, updateDoc, deleteDoc, collection, query, where, onSnapshot, orderBy, getDocs } from 'firebase/firestore';
+import { doc, getDoc, updateDoc, deleteDoc, collection, query, where, onSnapshot, orderBy, getDocs, addDoc } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
-import { Module, Quiz } from '../types';
+import { Module, Quiz, ModuleMaterial } from '../types';
 import { useAuth } from '../contexts/AuthContext';
 import { cn } from '../lib/utils';
 
@@ -49,10 +55,28 @@ export const ModuleDetailPage = () => {
   const [module, setModule] = useState<Module | null>(null);
   const [quizzes, setQuizzes] = useState<Quiz[]>([]);
   const [courseModules, setCourseModules] = useState<Module[]>([]);
+  const [quizLoadError, setQuizLoadError] = useState<string | null>(null);
+  const [quizRefreshKey, setQuizRefreshKey] = useState(0);
+  const [stats, setStats] = useState({
+    totalAttempts: 0,
+    avgScore: 0,
+    passRate: 0,
+    uniqueStudents: 0,
+    engagementRate: 0
+  });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [materials, setMaterials] = useState<ModuleMaterial[]>([]);
+  const [newMaterial, setNewMaterial] = useState<ModuleMaterial>({
+    id: '',
+    title: '',
+    type: 'article',
+    url: '',
+    description: ''
+  });
 
   // Form state
   const [formData, setFormData] = useState({
@@ -81,6 +105,7 @@ export const ModuleDetailPage = () => {
             icon: data.icon || 'terminal',
             color: data.color || 'blue-500'
           });
+          setMaterials(data.materials || []);
         } else {
           setError('Module not found');
         }
@@ -95,17 +120,50 @@ export const ModuleDetailPage = () => {
     fetchModule();
 
     // Fetch related quizzes
-    const q = query(collection(db, 'quizzes'), where('moduleId', '==', moduleId));
+    const q = query(collection(db, 'quizzes'), where('moduleId', '==', moduleId), orderBy('createdAt', 'desc'));
     const unsubscribeQuizzes = onSnapshot(q, (snapshot) => {
       const quizzesData = snapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data()
       })) as Quiz[];
       setQuizzes(quizzesData);
+      setQuizLoadError(null);
+    }, (err) => {
+      console.error('Error fetching quizzes:', err);
+      setQuizLoadError('Failed to load quizzes. Please retry.');
     });
 
     return () => unsubscribeQuizzes();
-  }, [moduleId]);
+  }, [moduleId, quizRefreshKey]);
+
+  useEffect(() => {
+    if (!moduleId) return;
+    const q = query(collection(db, 'results'), where('moduleId', '==', moduleId), orderBy('completedAt', 'desc'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const results = snapshot.docs.map(doc => doc.data() as any);
+      const totalAttempts = results.length;
+      const avgScore = totalAttempts
+        ? Math.round(results.reduce((acc, r) => acc + (r.score || 0), 0) / totalAttempts)
+        : 0;
+      const passedCount = results.filter(r => r.status === 'passed').length;
+      const passRate = totalAttempts ? Math.round((passedCount / totalAttempts) * 100) : 0;
+      const uniqueStudents = new Set(results.map(r => r.studentId)).size;
+      const studentsCount = module?.studentsCount || 0;
+      const engagementRate = studentsCount > 0 ? Math.round((uniqueStudents / studentsCount) * 100) : 0;
+
+      setStats({
+        totalAttempts,
+        avgScore,
+        passRate,
+        uniqueStudents,
+        engagementRate
+      });
+    }, (err) => {
+      console.error('Error fetching results:', err);
+    });
+
+    return () => unsubscribe();
+  }, [moduleId, module?.studentsCount]);
 
   // Fetch all modules in the course for navigation
   useEffect(() => {
@@ -143,6 +201,7 @@ export const ModuleDetailPage = () => {
       const docRef = doc(db, 'modules', moduleId);
       await updateDoc(docRef, {
         ...formData,
+        materials,
         updatedAt: new Date().toISOString()
       });
       setSuccess(true);
@@ -165,6 +224,69 @@ export const ModuleDetailPage = () => {
     } catch (err) {
       handleFirestoreError(err, OperationType.DELETE, `modules/${moduleId}`);
       setError('Failed to delete module');
+    }
+  };
+
+  const handleAddMaterial = () => {
+    if (!newMaterial.title.trim()) return;
+    const material: ModuleMaterial = {
+      ...newMaterial,
+      id: `${Date.now()}`
+    };
+    setMaterials((prev) => [...prev, material]);
+    setNewMaterial({
+      id: '',
+      title: '',
+      type: 'article',
+      url: '',
+      description: ''
+    });
+  };
+
+  const handleRemoveMaterial = (id: string) => {
+    setMaterials((prev) => prev.filter((m) => m.id !== id));
+  };
+
+  const handleDuplicateQuiz = async (quiz: Quiz) => {
+    try {
+      const { id, ...data } = quiz;
+      await addDoc(collection(db, 'quizzes'), {
+        ...data,
+        title: `${quiz.title} (Copy)`,
+        status: 'draft',
+        createdAt: new Date().toISOString()
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, 'quizzes');
+    }
+  };
+
+  const handleDeleteQuiz = async (quiz: Quiz) => {
+    if (!window.confirm(`Delete "${quiz.title}"? This cannot be undone.`)) return;
+    try {
+      await deleteDoc(doc(db, 'quizzes', quiz.id));
+      await addDoc(collection(db, 'audit_logs'), {
+        action: 'Quiz Deleted',
+        userEmail: user?.email || 'Unknown',
+        userId: user?.uid || 'Unknown',
+        details: `Deleted quiz "${quiz.title}" (ID: ${quiz.id})`,
+        timestamp: new Date().toISOString(),
+        status: 'success'
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `quizzes/${quiz.id}`);
+    }
+  };
+
+  const toggleArchiveQuiz = async (quiz: Quiz) => {
+    try {
+      const nextStatus = quiz.status === 'archived' ? 'active' : 'archived';
+      await updateDoc(doc(db, 'quizzes', quiz.id), {
+        status: nextStatus,
+        updatedAt: new Date().toISOString()
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `quizzes/${quiz.id}`);
     }
   };
 
@@ -205,6 +327,12 @@ export const ModuleDetailPage = () => {
         </button>
         {isAdmin && (
           <div className="flex gap-3">
+            <Link
+              to={`/quiz-builder?moduleId=${moduleId}`}
+              className="px-4 py-2 bg-primary/10 text-primary rounded-lg font-bold flex items-center gap-2 hover:bg-primary/20 transition-colors"
+            >
+              <Plus size={18} /> Add Quiz
+            </Link>
             <button 
               onClick={handleDelete}
               className="px-4 py-2 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-500/10 rounded-lg font-bold flex items-center gap-2 transition-colors"
@@ -221,6 +349,28 @@ export const ModuleDetailPage = () => {
             </button>
           </div>
         )}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3">
+        <span className={cn(
+          "px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider",
+          module?.status === 'active' ? "bg-emerald-500/10 text-emerald-500" :
+          module?.status === 'archived' ? "bg-rose-500/10 text-rose-500" :
+          "bg-slate-500/10 text-slate-500"
+        )}>
+          {module?.status}
+        </span>
+        {!isAdmin && (
+          <span className="px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider bg-slate-200 text-slate-600">
+            Read-only
+          </span>
+        )}
+        <span className="text-xs text-slate-500 font-medium">
+          Created {module?.createdAt ? new Date(module.createdAt).toLocaleDateString() : '—'}
+        </span>
+        <span className="text-xs text-slate-500 font-medium">
+          Updated {module?.updatedAt ? new Date(module.updatedAt).toLocaleDateString() : '—'}
+        </span>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -330,6 +480,96 @@ export const ModuleDetailPage = () => {
             )}
           </div>
 
+          {/* Learning Materials */}
+          <div className="bg-white dark:bg-slate-900 p-8 rounded-[32px] border border-slate-200 dark:border-slate-800 shadow-sm">
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-xl font-black">Learning Materials</h2>
+              <span className="text-sm font-bold text-slate-500">{materials.length} Items</span>
+            </div>
+
+            {isAdmin && (
+              <div className="mb-6 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40">
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                  <input
+                    className="md:col-span-2 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 outline-none text-sm"
+                    placeholder="Material title"
+                    value={newMaterial.title}
+                    onChange={(e) => setNewMaterial({ ...newMaterial, title: e.target.value })}
+                  />
+                  <select
+                    className="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 outline-none text-sm"
+                    value={newMaterial.type}
+                    onChange={(e) => setNewMaterial({ ...newMaterial, type: e.target.value as ModuleMaterial['type'] })}
+                  >
+                    <option value="article">Article</option>
+                    <option value="video">Video</option>
+                    <option value="pdf">PDF</option>
+                    <option value="link">Link</option>
+                    <option value="notes">Notes</option>
+                  </select>
+                  <input
+                    className="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 outline-none text-sm"
+                    placeholder="URL (optional)"
+                    value={newMaterial.url || ''}
+                    onChange={(e) => setNewMaterial({ ...newMaterial, url: e.target.value })}
+                  />
+                </div>
+                <textarea
+                  className="w-full mt-3 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 outline-none text-sm min-h-[70px]"
+                  placeholder="Short description (optional)"
+                  value={newMaterial.description || ''}
+                  onChange={(e) => setNewMaterial({ ...newMaterial, description: e.target.value })}
+                />
+                <div className="flex justify-end mt-3">
+                  <button
+                    onClick={handleAddMaterial}
+                    className="px-4 py-2 bg-primary text-white rounded-xl text-sm font-bold"
+                  >
+                    Add Material
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {materials.length > 0 ? (
+              <div className="space-y-3">
+                {materials.map((m) => (
+                  <div key={m.id} className="flex items-start justify-between gap-4 p-4 rounded-2xl border border-slate-100 dark:border-slate-800">
+                    <div>
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">{m.type}</span>
+                        <h4 className="font-bold">{m.title}</h4>
+                      </div>
+                      {m.description && <p className="text-xs text-slate-500">{m.description}</p>}
+                      {m.url && (
+                        <a
+                          className="text-xs text-primary font-bold hover:underline"
+                          href={m.url}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Open Resource
+                        </a>
+                      )}
+                    </div>
+                    {isAdmin && (
+                      <button
+                        onClick={() => handleRemoveMaterial(m.id)}
+                        className="px-3 py-1.5 rounded-lg bg-rose-500/10 text-rose-600 text-xs font-bold"
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-10 border-2 border-dashed border-slate-100 dark:border-slate-800 rounded-2xl text-slate-500">
+                No learning materials added yet.
+              </div>
+            )}
+          </div>
+
           {/* Related Quizzes */}
           <div className="bg-white dark:bg-slate-900 p-8 rounded-[32px] border border-slate-200 dark:border-slate-800 shadow-sm">
             <div className="flex items-center justify-between mb-6">
@@ -348,18 +588,41 @@ export const ModuleDetailPage = () => {
             </div>
             
             <div className="space-y-4">
+              {quizLoadError && (
+                <div className="p-4 rounded-2xl border border-rose-200 bg-rose-50 text-rose-600 flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-sm font-bold">
+                    <AlertTriangle size={16} /> {quizLoadError}
+                  </div>
+                  <button
+                    onClick={() => setQuizRefreshKey((k) => k + 1)}
+                    className="px-3 py-1.5 rounded-lg bg-rose-600 text-white text-xs font-bold flex items-center gap-1"
+                  >
+                    <RefreshCw size={12} /> Retry
+                  </button>
+                </div>
+              )}
               {quizzes.length > 0 ? quizzes.map((quiz) => (
-                <div key={quiz.id} className="flex items-center justify-between p-4 rounded-2xl border border-slate-100 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+                <div key={quiz.id} className="group flex flex-col md:flex-row md:items-center justify-between gap-4 p-4 rounded-2xl border border-slate-100 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
                   <div className="flex items-center gap-4">
                     <div className="size-10 rounded-lg bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
                       <BookOpen size={20} className="text-slate-500" />
                     </div>
                     <div>
                       <h4 className="font-bold">{quiz.title}</h4>
-                      <p className="text-xs text-slate-500">{quiz.questionsCount} Questions • {quiz.durationMinutes} Minutes</p>
+                      <p className="text-xs text-slate-500">
+                        {quiz.questionsCount} Questions • {quiz.durationMinutes} Minutes • Passing {quiz.passingScore || 70}%
+                      </p>
                     </div>
                   </div>
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <span className={cn(
+                      "px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider",
+                      quiz.status === 'active' ? "bg-emerald-500/10 text-emerald-600" :
+                      quiz.status === 'archived' ? "bg-rose-500/10 text-rose-600" :
+                      "bg-slate-500/10 text-slate-500"
+                    )}>
+                      {quiz.status || 'active'}
+                    </span>
                     <span className={cn(
                       "px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider",
                       quiz.difficulty === 'beginner' ? "bg-emerald-500/10 text-emerald-500" :
@@ -368,12 +631,77 @@ export const ModuleDetailPage = () => {
                     )}>
                       {quiz.difficulty}
                     </span>
+                    <div className="relative">
+                      <button
+                        onClick={() => setOpenMenuId(openMenuId === quiz.id ? null : quiz.id)}
+                        className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500"
+                      >
+                        <MoreVertical size={16} />
+                      </button>
+                      {openMenuId === quiz.id && (
+                        <div className="absolute right-0 mt-2 w-44 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-xl z-20 p-2">
+                          <Link
+                            to={`/active-quiz/${quiz.id}`}
+                            onClick={() => setOpenMenuId(null)}
+                            className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-bold hover:bg-slate-50 dark:hover:bg-slate-800"
+                          >
+                            <Eye size={12} /> Preview
+                          </Link>
+                          {isAdmin && (
+                            <>
+                              <Link
+                                to={`/quiz-builder?moduleId=${moduleId}&quizId=${quiz.id}`}
+                                onClick={() => setOpenMenuId(null)}
+                                className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-bold hover:bg-slate-50 dark:hover:bg-slate-800"
+                              >
+                                Edit
+                              </Link>
+                              <button
+                                onClick={() => {
+                                  setOpenMenuId(null);
+                                  handleDuplicateQuiz(quiz);
+                                }}
+                                className="w-full text-left flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-bold hover:bg-slate-50 dark:hover:bg-slate-800"
+                              >
+                                <Copy size={12} /> Duplicate
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setOpenMenuId(null);
+                                  toggleArchiveQuiz(quiz);
+                                }}
+                                className="w-full text-left flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-bold hover:bg-slate-50 dark:hover:bg-slate-800"
+                              >
+                                <Archive size={12} /> {quiz.status === 'archived' ? 'Unarchive' : 'Archive'}
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setOpenMenuId(null);
+                                  handleDeleteQuiz(quiz);
+                                }}
+                                className="w-full text-left flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-bold text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-500/10"
+                              >
+                                <Trash2 size={12} /> Delete
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
               )) : (
                 <div className="text-center py-12 border-2 border-dashed border-slate-100 dark:border-slate-800 rounded-2xl">
                   <BookOpen className="mx-auto text-slate-300 mb-2" size={32} />
                   <p className="text-slate-500 font-medium">No quizzes added to this module yet.</p>
+                  {isAdmin && (
+                    <Link
+                      to={`/quiz-builder?moduleId=${moduleId}`}
+                      className="inline-flex items-center gap-2 mt-4 px-4 py-2 bg-primary text-white rounded-xl text-sm font-bold"
+                    >
+                      <Plus size={16} /> Create Your First Quiz
+                    </Link>
+                  )}
                 </div>
               )}
             </div>
@@ -385,6 +713,9 @@ export const ModuleDetailPage = () => {
           {/* Module Navigation */}
           <div className="bg-white dark:bg-slate-900 p-6 rounded-[32px] border border-slate-200 dark:border-slate-800 shadow-sm">
             <h3 className="text-sm font-bold uppercase tracking-wider text-slate-500 mb-4">Navigation</h3>
+            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4">
+              Module {currentIndex + 1} of {courseModules.length || 0}
+            </div>
             <div className="grid grid-cols-2 gap-4">
               <button
                 disabled={!prevModule}
@@ -413,11 +744,20 @@ export const ModuleDetailPage = () => {
             <h3 className="text-sm font-bold uppercase tracking-wider text-slate-500 mb-6">Engagement Metrics</h3>
             <div className="space-y-6">
               <div className="flex items-center gap-4">
+                <div className="size-12 rounded-2xl bg-primary/10 flex items-center justify-center text-primary">
+                  <BookOpen size={24} />
+                </div>
+                <div>
+                  <p className="text-2xl font-black">{quizzes.length}</p>
+                  <p className="text-xs text-slate-500 font-bold uppercase">Total Quizzes</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-4">
                 <div className="size-12 rounded-2xl bg-blue-500/10 flex items-center justify-center text-blue-500">
                   <Users size={24} />
                 </div>
                 <div>
-                  <p className="text-2xl font-black">{module?.studentsCount || 0}</p>
+                  <p className="text-2xl font-black">{stats.uniqueStudents}</p>
                   <p className="text-xs text-slate-500 font-bold uppercase">Active Students</p>
                 </div>
               </div>
@@ -426,26 +766,65 @@ export const ModuleDetailPage = () => {
                   <BarChart size={24} />
                 </div>
                 <div>
-                  <p className="text-2xl font-black">{module?.engagement || 0}%</p>
+                  <p className="text-2xl font-black">{stats.engagementRate}%</p>
                   <p className="text-xs text-slate-500 font-bold uppercase">Engagement Rate</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-4">
+                <div className="size-12 rounded-2xl bg-emerald-500/10 flex items-center justify-center text-emerald-500">
+                  <CheckCircle2 size={24} />
+                </div>
+                <div>
+                  <p className="text-2xl font-black">{stats.passRate}%</p>
+                  <p className="text-xs text-slate-500 font-bold uppercase">Pass Rate</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-4">
+                <div className="size-12 rounded-2xl bg-amber-500/10 flex items-center justify-center text-amber-500">
+                  <BookOpen size={24} />
+                </div>
+                <div>
+                  <p className="text-2xl font-black">{stats.totalAttempts}</p>
+                  <p className="text-xs text-slate-500 font-bold uppercase">Total Attempts</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-4">
+                <div className="size-12 rounded-2xl bg-violet-500/10 flex items-center justify-center text-violet-500">
+                  <BarChart size={24} />
+                </div>
+                <div>
+                  <p className="text-2xl font-black">{stats.avgScore}%</p>
+                  <p className="text-xs text-slate-500 font-bold uppercase">Avg Score</p>
                 </div>
               </div>
             </div>
           </div>
 
-          {success && (
-            <div className="bg-emerald-50 dark:bg-emerald-500/10 p-4 rounded-2xl border border-emerald-100 dark:border-emerald-500/20 flex items-center gap-3 text-emerald-600 animate-in fade-in slide-in-from-top-2">
-              <CheckCircle2 size={20} />
-              <p className="text-sm font-bold">Changes saved successfully!</p>
+          {(quizzes.length === 0 || quizzes.some(q => q.status === 'draft')) && (
+            <div className="bg-amber-50 dark:bg-amber-500/10 p-4 rounded-2xl border border-amber-100 dark:border-amber-500/20 flex items-start gap-3 text-amber-700 dark:text-amber-400">
+              <AlertTriangle size={20} />
+              <div>
+                <p className="text-sm font-bold">Module readiness check</p>
+                {quizzes.length === 0 && <p className="text-xs mt-1">No quizzes yet. Create at least one quiz before going live.</p>}
+                {quizzes.some(q => q.status === 'draft') && <p className="text-xs mt-1">Some quizzes are still in draft.</p>}
+              </div>
             </div>
           )}
 
-          {error && (
-            <div className="bg-rose-50 dark:bg-rose-500/10 p-4 rounded-2xl border border-rose-100 dark:border-rose-500/20 flex items-center gap-3 text-rose-600 animate-in fade-in slide-in-from-top-2">
-              <AlertCircle size={20} />
-              <p className="text-sm font-bold">{error}</p>
-            </div>
-          )}
+      {success && (
+        <div className="bg-emerald-50 dark:bg-emerald-500/10 p-4 rounded-2xl border border-emerald-100 dark:border-emerald-500/20 flex items-center gap-3 text-emerald-600 animate-in fade-in slide-in-from-top-2">
+          <CheckCircle2 size={20} />
+          <p className="text-sm font-bold">Changes saved successfully!</p>
+        </div>
+      )}
+
+      {error && (
+        <div className="bg-rose-50 dark:bg-rose-500/10 p-4 rounded-2xl border border-rose-100 dark:border-rose-500/20 flex items-center gap-3 text-rose-600 animate-in fade-in slide-in-from-top-2">
+          <AlertCircle size={20} />
+          <p className="text-sm font-bold">{error}</p>
+        </div>
+      )}
+
         </div>
       </div>
     </div>

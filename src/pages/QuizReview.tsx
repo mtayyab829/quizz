@@ -18,6 +18,11 @@ import {
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 
+const textResponseTypes: Question['type'][] = ['short-answer', 'fill-in-the-blank', 'verbal'];
+const isTextResponseType = (type: Question['type']) => textResponseTypes.includes(type);
+const formatQuestionType = (type: Question['type']) => type.split('-').join(' ');
+const hasImageUrl = (url?: string) => (url || '').trim().length > 0;
+
 export const QuizReviewPage = () => {
   const { resultId } = useParams();
   const navigate = useNavigate();
@@ -163,7 +168,7 @@ interface ReviewQuestionCardProps {
 const ReviewQuestionCard: React.FC<ReviewQuestionCardProps> = ({ question, userAnswer, index }) => {
   let isCorrect = false;
 
-  if (question.type === 'short-answer') {
+  if (isTextResponseType(question.type)) {
     isCorrect = typeof userAnswer === 'string' && userAnswer.trim().toLowerCase() === question.correctAnswerText?.trim().toLowerCase();
   } else if (question.type === 'multi-select') {
     const correctAnswers = (question.correctAnswer as number[]) || [];
@@ -204,7 +209,7 @@ const ReviewQuestionCard: React.FC<ReviewQuestionCardProps> = ({ question, userA
           <div>
             <div className="flex items-center gap-3 mb-3">
               <span className="px-3 py-1 bg-slate-100 dark:bg-slate-800 text-slate-500 text-[10px] font-black uppercase tracking-widest rounded-full">
-                {question.type.replace('-', ' ')}
+                {formatQuestionType(question.type)}
               </span>
               <span className="px-3 py-1 bg-slate-100 dark:bg-slate-800 text-slate-500 text-[10px] font-black uppercase tracking-widest rounded-full">
                 {question.points || 10} Points
@@ -260,6 +265,42 @@ const ReviewQuestionCard: React.FC<ReviewQuestionCardProps> = ({ question, userA
                       {String.fromCharCode(65 + i)}
                     </div>
                     <span>{option}</span>
+                  </div>
+                  {isCorrectChoice && <CheckCircle2 size={24} />}
+                  {isUserChoice && !isCorrectChoice && <XCircle size={24} />}
+                </div>
+              );
+            })}
+          </div>
+        ) : question.type === 'non-verbal' ? (
+          <div className="grid grid-cols-1 gap-4">
+            {question.optionImages?.map((img, i) => {
+              const isUserChoice = userAnswer === i;
+              const isCorrectChoice = question.correctAnswer === i;
+              return (
+                <div 
+                  key={i}
+                  className={cn(
+                    "p-6 rounded-3xl border-2 text-base font-bold flex items-center justify-between transition-all",
+                    isCorrectChoice 
+                      ? "bg-emerald-500 text-white border-emerald-500 shadow-lg shadow-emerald-500/20" 
+                      : isUserChoice 
+                        ? "bg-rose-500 text-white border-rose-500 shadow-lg shadow-rose-500/20"
+                        : "bg-white dark:bg-slate-900 border-slate-100 dark:border-slate-800 text-slate-600 dark:text-slate-400"
+                  )}
+                >
+                  <div className="flex items-center gap-4">
+                    <div className={cn(
+                      "size-8 rounded-xl border-2 flex items-center justify-center text-xs font-black",
+                      isCorrectChoice || isUserChoice ? "bg-white/20 border-white/40" : "bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700"
+                    )}>
+                      {String.fromCharCode(65 + i)}
+                    </div>
+                    {hasImageUrl(img) ? (
+                      <img src={img} alt={`Option ${i + 1}`} className="w-full max-w-[260px] rounded-2xl border border-white/30" />
+                    ) : (
+                      <span className="text-xs font-bold uppercase tracking-widest">Image required</span>
+                    )}
                   </div>
                   {isCorrectChoice && <CheckCircle2 size={24} />}
                   {isUserChoice && !isCorrectChoice && <XCircle size={24} />}

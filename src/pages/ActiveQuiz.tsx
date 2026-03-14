@@ -19,6 +19,11 @@ import { db, handleFirestoreError, OperationType } from '../firebase';
 import { useParams } from 'react-router-dom';
 import { Quiz, Question } from '../types';
 
+const textResponseTypes: Question['type'][] = ['short-answer', 'fill-in-the-blank', 'verbal'];
+const isTextResponseType = (type: Question['type']) => textResponseTypes.includes(type);
+const formatQuestionType = (type: Question['type']) => type.split('-').join(' ');
+const hasImageUrl = (url?: string) => (url || '').trim().length > 0;
+
 export const ActiveQuizPage = () => {
   const { quizId } = useParams();
   const navigate = useNavigate();
@@ -139,7 +144,7 @@ export const ActiveQuizPage = () => {
       const answer = answers[index];
       let isCorrect = false;
 
-      if (q.type === 'short-answer') {
+      if (isTextResponseType(q.type)) {
         isCorrect = typeof answer === 'string' && answer.trim().toLowerCase() === q.correctAnswerText?.trim().toLowerCase();
       } else if (q.type === 'multi-select') {
         const correctAnswers = (q.correctAnswer as number[]) || [];
@@ -268,7 +273,7 @@ export const ActiveQuizPage = () => {
   if (isFinished) {
     const scorePercentage = Math.round((questions.filter((q, i) => {
       const answer = answers[i];
-      if (q.type === 'short-answer') return typeof answer === 'string' && answer.trim().toLowerCase() === q.correctAnswerText?.trim().toLowerCase();
+      if (isTextResponseType(q.type)) return typeof answer === 'string' && answer.trim().toLowerCase() === q.correctAnswerText?.trim().toLowerCase();
       if (q.type === 'multi-select') return JSON.stringify(((q.correctAnswer as number[]) || []).sort()) === JSON.stringify(((answer as number[]) || []).sort());
       return answer === q.correctAnswer;
     }).length / questions.length) * 100);
@@ -276,7 +281,7 @@ export const ActiveQuizPage = () => {
     const earnedPoints = questions.reduce((acc, q, index) => {
       const answer = answers[index];
       let isCorrect = false;
-      if (q.type === 'short-answer') isCorrect = typeof answer === 'string' && answer.trim().toLowerCase() === q.correctAnswerText?.trim().toLowerCase();
+      if (isTextResponseType(q.type)) isCorrect = typeof answer === 'string' && answer.trim().toLowerCase() === q.correctAnswerText?.trim().toLowerCase();
       else if (q.type === 'multi-select') isCorrect = JSON.stringify(((q.correctAnswer as number[]) || []).sort()) === JSON.stringify(((answer as number[]) || []).sort());
       else isCorrect = answer === q.correctAnswer;
       return acc + (isCorrect ? (q.points || 10) : 0);
@@ -371,7 +376,7 @@ export const ActiveQuizPage = () => {
           <div className="mb-10">
             <div className="flex items-center gap-3 mb-6">
               <span className="px-4 py-1 bg-primary/10 text-primary text-[10px] font-black uppercase tracking-widest rounded-full">
-                {question.type.replace('-', ' ')}
+                {formatQuestionType(question.type)}
               </span>
               <span className="px-4 py-1 bg-slate-100 dark:bg-slate-800 text-slate-500 text-[10px] font-black uppercase tracking-widest rounded-full">
                 {question.points || 10} Points
@@ -387,7 +392,7 @@ export const ActiveQuizPage = () => {
             )}
           </div>
 
-          {question.type === 'short-answer' ? (
+          {isTextResponseType(question.type) ? (
             <div className="space-y-4">
               <input 
                 type="text"
@@ -460,6 +465,41 @@ export const ActiveQuizPage = () => {
                 </div>
               ))}
             </div>
+          ) : question.type === 'non-verbal' ? (
+            <div className="grid grid-cols-1 gap-4">
+              {question.optionImages?.map((img, index) => {
+                const isSelected = answers[currentQuestion] === index;
+                return (
+                  <button
+                    key={index}
+                    onClick={() => handleOptionSelect(index)}
+                    className={cn(
+                      "w-full p-6 rounded-3xl border-2 text-left transition-all flex items-center justify-between group relative overflow-hidden",
+                      isSelected 
+                        ? "border-primary bg-primary/5 text-primary shadow-lg shadow-primary/5" 
+                        : "border-slate-100 dark:border-slate-800 hover:border-slate-200 dark:hover:border-slate-700 bg-slate-50/30 dark:bg-slate-800/30"
+                    )}
+                  >
+                    <div className="flex items-center gap-6">
+                      <div className={cn(
+                        "size-10 rounded-2xl border-2 flex items-center justify-center font-black transition-all",
+                        isSelected 
+                          ? "bg-primary border-primary text-white rotate-12 scale-110 shadow-lg shadow-primary/30" 
+                          : "border-slate-200 dark:border-slate-700 group-hover:border-slate-300 text-slate-400"
+                      )}>
+                        {String.fromCharCode(65 + index)}
+                      </div>
+                      {hasImageUrl(img) ? (
+                        <img src={img} alt={`Option ${index + 1}`} className="w-full max-w-[320px] rounded-2xl border border-slate-200 dark:border-slate-700" />
+                      ) : (
+                        <span className="text-sm font-bold text-slate-400">Image required</span>
+                      )}
+                    </div>
+                    {isSelected && <CheckCircle2 size={24} className="text-primary animate-in zoom-in" />}
+                  </button>
+                );
+              })}
+            </div>
           ) : (
             <div className="grid grid-cols-1 gap-4">
               {question.options?.map((option, index) => {
@@ -478,21 +518,21 @@ export const ActiveQuizPage = () => {
                         : "border-slate-100 dark:border-slate-800 hover:border-slate-200 dark:hover:border-slate-700 bg-slate-50/30 dark:bg-slate-800/30"
                     )}
                   >
-                    <div className="flex items-center gap-6">
-                      <div className={cn(
-                        "size-10 rounded-2xl border-2 flex items-center justify-center font-black transition-all",
-                        isSelected 
-                          ? "bg-primary border-primary text-white rotate-12 scale-110 shadow-lg shadow-primary/30" 
-                          : "border-slate-200 dark:border-slate-700 group-hover:border-slate-300 text-slate-400"
-                      )}>
-                        {String.fromCharCode(65 + index)}
+                      <div className="flex items-center gap-6">
+                        <div className={cn(
+                          "size-10 rounded-2xl border-2 flex items-center justify-center font-black transition-all",
+                          isSelected 
+                            ? "bg-primary border-primary text-white rotate-12 scale-110 shadow-lg shadow-primary/30" 
+                            : "border-slate-200 dark:border-slate-700 group-hover:border-slate-300 text-slate-400"
+                        )}>
+                          {String.fromCharCode(65 + index)}
+                        </div>
+                        <span className="text-lg font-bold">{option}</span>
                       </div>
-                      <span className="text-lg font-bold">{option}</span>
-                    </div>
-                    {isSelected && <CheckCircle2 size={24} className="text-primary animate-in zoom-in" />}
-                  </button>
-                );
-              })}
+                      {isSelected && <CheckCircle2 size={24} className="text-primary animate-in zoom-in" />}
+                    </button>
+                  );
+                })}
             </div>
           )}
         </div>
